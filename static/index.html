@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>启名 · AI 起名</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="seal">名</span>启名 · AI 起名</div>
+    <nav>
+      <a href="#/baby" data-nav="baby">宝宝起名</a>
+      <a href="#/company" data-nav="company">公司起名</a>
+      <a href="#/favorites" data-nav="favorites">收藏</a>
+      <a href="#/settings" data-nav="settings">设置</a>
+    </nav>
+  </header>
+  <main id="app"></main>
+  <footer>起名建议由 AI 生成，仅供文化参考；笔画以《康熙字典》为准，重名情况以当地公安/工商查询为准。</footer>
+  <div class="toast" id="toast"></div>
+  <script src="engine.js"></script>
+  <script src="bazi.js"></script>
+  <script src="data/strokes.js"></script>
+  <script src="data/wuge.js"></script>
+  <script src="xiyong.js"></script>
+  <script src="prompts.js"></script>
+  <script src="parse.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

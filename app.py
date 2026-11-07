@@ -7,7 +7,7 @@
 - 三才五格由前端程序复核（data/wuge.js），与 AI 输出解耦
 
 用法：
-    python3 app.py                # http://127.0.0.1:8772
+    python3 app.py                # http://127.0.0.1:8774
     python3 app.py --host 0.0.0.0 # 局域网内手机也可访问
 """
 import argparse
@@ -479,7 +479,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser(description="启名 · AI 起名 本地服务")
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8772)
+    ap.add_argument("--port", type=int, default=8774)
     args = ap.parse_args()
 
     os.makedirs(DATA_DIR, exist_ok=True)

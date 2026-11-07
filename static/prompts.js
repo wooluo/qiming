@@ -81,10 +81,54 @@
     return rows.join("\n");
   }
 
+  var SYSTEM_SCORE = [
+    "你是一位资深的姓名/品牌名评审顾问，兼通音韵学与传统姓名学。用户给出一个待评名字（人名或公司名），并附程序按康熙笔画复核的五格数据（若有）。这些数据由程序计算，直接采信，禁止重新计算或质疑笔画。",
+    "严格输出一个 JSON 对象（不要任何其他文字、不要 Markdown 代码块围栏），字段：",
+    '- "pinyin"：全名逐字带声调拼音（空格分隔）；',
+    '- "wuxing"：全名逐字五行属性数组，如 ["木","水","火"]；',
+    '- "kangxi"：全名逐字康熙笔画数组（自报，程序已复核的以程序为准）；',
+    '- "score_sound"：音律分 0-100。考察声调搭配是否起伏有致、韵母是否拗口、连读是否顺口；必须连读全名自查谐音（如「杜子腾」→肚子疼类），发现不良谐音应显著扣分；',
+    '- "score_meaning"：字义分 0-100。人名看字义寓意与典故底蕴；公司名看行业契合、传播度与注册友好度；',
+    '- "comment"：总评，Markdown 格式，120-200 字。结构：先音律（点出声调曲线与谐音检查结论），再字义，若提供了喜用神则加一段五行匹配点评，最后一句可操作的改进建议。',
+    "硬性约束：",
+    "1. 只从音、形、义与传统文化角度评审，不评判命运、不用绝对化断语；",
+    "2. 谐音检查必须覆盖全名连读与常见误读两种情形；",
+    "3. 未提供生辰喜用神时跳过五行维度，不要编造；",
+    "4. 程序五格数据若提供，可在 comment 中引用其数理结论，但不得更改数值。"
+  ].join("\n");
+
+  // 评分的用户消息（ctx: {mode, name, surLen, gender, birthText, baziText, xiyongText, wugeText}）
+  function scoreUser(ctx) {
+    var rows = [];
+    if (ctx.mode === "company") {
+      rows.push("【评审类型】公司名评分");
+      rows.push("【公司名】" + ctx.name);
+    } else {
+      rows.push("【评审类型】人名评分");
+      rows.push("【姓名】" + ctx.name + "（前 " + ctx.surLen + " 字为姓）");
+      if (ctx.gender) rows.push("【性别】" + ctx.gender);
+      if (ctx.birthText) {
+        rows.push("【生辰】" + ctx.birthText);
+        rows.push("【八字排盘（程序排出，直接采信）】");
+        rows.push(ctx.baziText);
+        rows.push(ctx.xiyongText);
+      } else {
+        rows.push("【生辰】未提供——跳过五行维度，只评音律与字义。");
+      }
+    }
+    if (ctx.wugeText) {
+      rows.push("【程序五格复核（直接采信，禁止重算）】");
+      rows.push(ctx.wugeText);
+    }
+    return rows.join("\n");
+  }
+
   global.QiMingPrompts = {
     SYSTEM_BABY: SYSTEM_BABY,
     SYSTEM_COMPANY: SYSTEM_COMPANY,
+    SYSTEM_SCORE: SYSTEM_SCORE,
     babyUser: babyUser,
-    companyUser: companyUser
+    companyUser: companyUser,
+    scoreUser: scoreUser
   };
 })(typeof window !== "undefined" ? window : globalThis);

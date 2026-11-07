@@ -128,6 +128,49 @@ function makeSandbox(mem, opts) {
   assert.ok(cit.parts.some((p) => p.name === "数理总格"));
   console.log("✓ 公司模式评分 OK：总分", cit.total, "|", cit.formula);
 
+  // ---------- 1c) 名字评分页（程序分 + AI 详评合成 + 缺字兜底） ----------
+  Q.test.scoreForm = { mode: "baby", name: "李沐阳", gender: "男", date: "", hour: "" };
+  let sctx = Q.test.scoreCtx();
+  let sps = Q.test.programScore(sctx);
+  assert.strictEqual(sctx.surLen, 1);
+  assert.strictEqual(sps.score, 96, "李沐阳 三才五格程序分 96");
+  assert.strictEqual(sps.wg.grids.ren.num, 15);
+
+  // 带生辰：合成综合分（五行40+五格30+音律15+字义15）
+  Q.test.scoreForm = { mode: "baby", name: "李沐阳", gender: "男", date: "1990-05-23", hour: "13" };
+  sctx = Q.test.scoreCtx();
+  assert.strictEqual(JSON.stringify(sctx.bu), JSON.stringify(["木", "水"]), "评分页喜用神");
+  assert.ok(sctx.birthText.includes("未时"), "评分页生辰文本");
+  const sfull = Q.test.enrichItem({
+    name: "李沐阳", given: "沐阳", pinyin: "mù yáng", wuxing: ["木", "水", "火"],
+    kangxi: [7, 8, 17], score_sound: 88, score_meaning: 92
+  }, sctx);
+  assert.ok(sfull.total >= 0 && sfull.total <= 100);
+  assert.ok(sfull.parts.some((p) => p.name === "五行匹配"), "有生辰时有五行项");
+  assert.ok(sfull.formula.includes("40%"));
+  console.log("✓ 姓名评分（含生辰合成）OK：程序分", sps.score, "→ 综合分", sfull.total);
+
+  // 公司名评分：总格数理 + 缺字 AI 兜底
+  Q.test.scoreForm = { mode: "company", name: "云帆科技", gender: "男", date: "", hour: "" };
+  sctx = Q.test.scoreCtx();
+  sps = Q.test.programScore(sctx);
+  assert.strictEqual(sctx.surLen, 1, "公司名按单姓结构取总格");
+  assert.strictEqual(sps.wg.grids.zong.num, 35, "云(12)帆(6)科(9)技(8) 总格 35");
+  assert.strictEqual(sps.score, 85, "总格35=吉 → 85");
+  Q.test.scoreForm = { mode: "company", name: "龘鑫科技", gender: "男", date: "", hour: "" };
+  const nullCtx = Q.test.scoreCtx();
+  assert.strictEqual(Q.test.programScore(nullCtx).wg, null, "缺笔画且无兜底 → null");
+  const fixed = Q.test.programScore(nullCtx, { "龘": 20 });
+  assert.strictEqual(fixed.wg.grids.zong.num, 61, "AI 笔画兜底 20+24+9+8=61");
+  assert.strictEqual(JSON.stringify(fixed.wg.unverified), JSON.stringify(["龘"]), "兜底字标注未核验");
+  console.log("✓ 公司名评分 + 缺字 AI 兜底 OK");
+
+  // 评分详评解析钩子
+  const rv = Q.review('```json\n{"pinyin":"yún fān kē jì","wuxing":["水","水","木","木"],' +
+    '"kangxi":[12,6,9,8],"score_sound":85,"score_meaning":88,"comment":"总评"}\n```');
+  assert.ok(rv.ok && rv.item.score_meaning === 88);
+  console.log("✓ 评分详评解析钩子 OK");
+
   // ---------- 2) 直连本地真模型（--no-llm 跳过；GLM 指向本机端点仅作测试） ----------
   if (!process.argv.includes("--no-llm")) {
     try {
@@ -222,5 +265,37 @@ function makeSandbox(mem, opts) {
   assert.ok(/GLM/.test(appEl3.innerHTML), "设置页应渲染 GLM 卡片");
   assert.ok(/离线模式/.test(appEl3.innerHTML), "设置页应显示离线模式标识");
   console.log("✓ 手机环境设置页渲染 OK");
+
+  // 5) 评分页在原生环境渲染
+  const mem4 = new Map();
+  const appEl4 = { innerHTML: "", addEventListener: () => {} };
+  const sb4 = {
+    console, setTimeout, clearTimeout,
+    performance: { now: () => Date.now() }, fetch: global.fetch,
+    URLSearchParams, URL, TextDecoder, AbortController,
+    navigator: {}, location: { hash: "#/score" },
+    localStorage: { getItem: (k) => (mem4.has(k) ? mem4.get(k) : null),
+      setItem: (k, v) => mem4.set(k, String(v)), removeItem: (k) => mem4.delete(k) },
+    document: new Proxy({}, {
+      get(t, p) {
+        if (p === "getElementById") return (id) => (id === "app" ? appEl4 : magic);
+        return magic;
+      }
+    }),
+    confirm: () => true, alert: () => {},
+    addEventListener: () => {}, scrollTo: () => {},
+    Capacitor: { isNativePlatform: () => true, Plugins: {} }
+  };
+  sb4.window = sb4; sb4.globalThis = sb4;
+  vm.createContext(sb4);
+  ["engine.js", "bazi.js", "data/strokes.js", "data/wuge.js", "xiyong.js",
+   "prompts.js", "parse.js", "app.js"].forEach((f) =>
+    vm.runInContext(fs.readFileSync(STATIC(f), "utf8"), sb4));
+  await new Promise((r) => setTimeout(r, 150));
+  assert.ok(/名字评分/.test(appEl4.innerHTML), "评分页应完整渲染");
+  assert.ok(/姓名评分/.test(appEl4.innerHTML) && /公司名评分/.test(appEl4.innerHTML), "评分页应有双模式切换");
+  assert.ok(/立即评分/.test(appEl4.innerHTML), "评分页应有评分按钮");
+  assert.ok(/五行喜用匹配/.test(appEl4.innerHTML), "评分页应说明生辰用途与权重");
+  console.log("✓ 手机环境评分页渲染 OK");
 })().catch((e) => { console.error("FAIL:", e); process.exit(1); });
 // 注：合规页脚（起名建议由 AI 生成…康熙字典…公安/工商）固定于 index.html，随 App 打包

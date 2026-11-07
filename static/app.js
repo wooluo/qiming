@@ -448,6 +448,7 @@ function route() {
   $$(".topbar nav a").forEach((a) => a.classList.toggle("active", a.dataset.nav === page));
   window.scrollTo(0, 0);
   if (page === "company") return renderCompany();
+  if (page === "score") return renderScore();
   if (page === "favorites") return renderFavorites();
   if (page === "settings") return renderSettings();
   return renderBaby();
@@ -656,6 +657,299 @@ async function renderCompany() {
   $("#go-co-gen").addEventListener("click", () => startGenerate("company"));
 }
 
+// ---------------- 名字评分 ----------------
+let scoreForm = { mode: "baby", name: "", gender: "男", date: "", hour: "" };
+let scoreState = { ctx: null, wg: null, prog: null, review: null, running: false };
+
+function scoreCtx() {
+  const name = scoreForm.name.replace(/\s+/g, "");
+  if (!/^[\u4e00-\u9fff]{2,5}$/.test(name)) throw new Error("请输入 2-5 个汉字的名字");
+  const mode = scoreForm.mode === "company" ? "company" : "baby";
+  const surLen = mode === "company" ? 1
+    : (QiMingStrokes.COMPOUND_SURNAMES.indexOf(name.slice(0, 2)) >= 0 ? 2 : 1);
+  let birthText = "", baziText = "", xiyongText = "", bu = null;
+  if (mode === "baby" && scoreForm.date) {
+    const [y, m, d] = scoreForm.date.split("-").map(Number);
+    if (y && m && d) {
+      const hour = scoreForm.hour === "" ? null : parseInt(scoreForm.hour, 10);
+      const chart = LiuYaoBazi.buildChart({
+        name, gender: scoreForm.gender === "女" ? "女" : "男", y, m, d, hour
+      });
+      const xy = QiMingXiyong.analyze(chart);
+      birthText = scoreForm.date + (hour === null ? "（时辰不详，按三柱论）"
+        : " " + LiuYaoBazi.HOUR_NAMES[((hour + 1) % 24) >> 1]);
+      baziText = chart.bazi_text;
+      xiyongText = QiMingXiyong.promptText(xy);
+      bu = xy.bu;
+    }
+  }
+  return { mode, name, surLen, gender: mode === "baby" ? scoreForm.gender : "",
+    birthText, baziText, xiyongText, bu };
+}
+
+// 程序评分：姓名 → 三才五格分；公司名 → 总格数理分。aiStrokes 用于缺字兜底重算。
+function programScore(ctx, aiStrokes) {
+  const wg = QiMingWuge.analyze(ctx.name, { surLen: ctx.surLen, aiStrokes: aiStrokes || {} });
+  if (!wg) return { wg: null, score: null };
+  const score = ctx.mode === "company" ? LUCK_SCORE[wg.grids.zong.luck] : wg.score;
+  return { wg, score };
+}
+
+// 供提示词引用的五格摘要（AI 被要求直接采信、禁止重算）
+function wugeSummaryText(wg) {
+  if (!wg) return "程序未能确定全部笔画，五格暂缺（请自报康熙笔画供参考）。";
+  const g = wg.grids;
+  return "天" + g.tian.num + " 人" + g.ren.num + "(" + g.ren.luck + ") 地" + g.di.num + "(" + g.di.luck +
+    ") 外" + g.wai.num + "(" + g.wai.luck + ") 总" + g.zong.num + "(" + g.zong.luck + ")；" +
+    "三才 " + wg.sancai.elements + "（" + wg.sancai.verdict + "）" +
+    (wg.unverified.length ? "；笔画未经核验的字：" + wg.unverified.join("、") : "");
+}
+
+function scoreCharsHtml(wg) {
+  if (!wg) return "";
+  return `<div class="nc-char-wx">` + wg.chars.map((c) =>
+    `<span class="cwx"><b>${esc(c.ch)}</b><i>${esc(c.t)} · ${c.s}画${c.verified ? "" : "?"}</i></span>`).join("") + `</div>`;
+}
+
+async function renderScore() {
+  await loadConfig();
+  const babyOnly = scoreForm.mode === "baby" ? "" : "display:none";
+  app.innerHTML = `
+  <section>
+    <div class="card">
+      <h2>名字评分 <span class="sub">三才五格程序复核 + AI 音义详评</span></h2>
+      <label class="field">评分类型</label>
+      <div class="mode-row">
+        <span class="chip" data-sm="baby">姓名评分</span>
+        <span class="chip" data-sm="company">公司名评分</span>
+      </div>
+      <label class="field">名字（2-5 个汉字）</label>
+      <input type="text" id="s-name" maxlength="5" placeholder="例：李沐阳 / 欧阳昊 / 云帆科技">
+      <div id="s-baby-extra" style="${babyOnly}">
+        <div class="grid2">
+          <div>
+            <label class="field">性别（影响大运，仅供八字排盘）</label>
+            <select id="s-gender"><option value="男">男</option><option value="女">女</option></select>
+          </div>
+          <div>
+            <label class="field">出生日期（选填）</label>
+            <input type="date" id="s-date">
+          </div>
+        </div>
+        <label class="field">出生时辰（选填）</label>
+        <select id="s-hour">
+          <option value="">不知道 / 不填</option>
+          ${LiuYaoBazi.HOUR_NAMES.map((n, i) => {
+            const h = i === 0 ? 0 : 2 * i - 1;
+            return `<option value="${h}">${n}</option>`;
+          }).join("")}
+        </select>
+        <div class="hint">填生辰可加入<b>五行喜用匹配</b>评分项（权重 40%）；不填则评 五格 50% + 音律 25% + 字义 25%。生辰只在本机排盘。</div>
+      </div>
+      <div id="s-company-extra" style="${scoreForm.mode === "company" ? "" : "display:none"}">
+        <div class="hint">公司名以<b>总格数理</b>（40%）+ AI 音律/寓意（60%）评分；三才五格是人名学框架，公司名不取人格地格。</div>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary big" id="s-go">立即评分 →</button>
+      </div>
+    </div>
+    <div id="score-result"></div>
+  </section>`;
+
+  $$("[data-sm]").forEach((c) => {
+    c.classList.toggle("active", c.dataset.sm === scoreForm.mode);
+    c.addEventListener("click", () => {
+      scoreForm.mode = c.dataset.sm;
+      renderScore();
+    });
+  });
+  const bind = (id, key, ev = "input") => {
+    const el = $(id);
+    el.value = scoreForm[key];
+    el.addEventListener(ev, () => { scoreForm[key] = el.value; });
+  };
+  bind("#s-name", "name");
+  bind("#s-gender", "gender", "change");
+  bind("#s-date", "date", "change");
+  bind("#s-hour", "hour", "change");
+  $("#s-go").addEventListener("click", () => {
+    try {
+      const ctx = scoreCtx();
+      const ps = programScore(ctx);
+      scoreState = { ctx, wg: ps.wg, prog: ps.score, review: null, full: null, running: false };
+      renderScoreResult();
+      if (ps.score === null) toast("部分字笔画待补，可先 AI 详评自报笔画后自动补算");
+    } catch (e) { toast(e.message); }
+  });
+  if (scoreState.ctx) renderScoreResult();
+}
+
+function programCardHtml() {
+  const { ctx, wg, prog } = scoreState;
+  const isCompany = ctx.mode === "company";
+  const ring = prog === null
+    ? `<div class="ring"><span class="v" style="color:var(--ink-faint)">?</span></div>`
+    : ringHtml(prog);
+  const body = isCompany
+    ? (wg ? `
+        <table class="wg-table">
+          <tr><th>总格 · 全名笔画之和</th><td class="num">${wg.grids.zong.num}</td>
+          <td><span class="luck ${wg.grids.zong.luck}">${wg.grids.zong.luck}</span>
+          <span style="color:var(--ink-faint);font-size:11.5px">${esc(wg.grids.zong.desc)}</span></td></tr>
+        </table>
+        <div class="score-formula">公司名程序分 = 总格数理（${prog}）</div>`
+      : `<div class="unverified">存在无法确定笔画的字；AI 详评自报笔画后可自动补算（标注未核验）。</div>`)
+    : `<details class="nc-detail" open><summary>三才五格明细（程序复核，康熙笔画）</summary>${wugeDetailHtml(wg)}</details>
+       <div class="score-formula">程序分 ${prog}：人格35% + 地格20% + 总格25% + 外格10% + 三才10%（天格承祖不计）</div>`;
+  return `
+  <div class="name-card">
+    <div class="nc-head">
+      <div class="nc-name">${esc(ctx.name)}<small>程序复核评分</small></div>
+      ${ring}
+    </div>
+    ${scoreCharsHtml(wg)}
+    ${body}
+    <div class="nc-btns">
+      <button class="btn small ghost" id="s-copy">复制评分报告</button>
+      <button class="btn small primary" id="s-ai">${scoreState.review ? "重新 AI 详评" : "AI 详评（音律/字义）→"}</button>
+    </div>
+  </div>`;
+}
+
+function renderScoreResult() {
+  const box = $("#score-result");
+  if (!box) return;
+  box.innerHTML = programCardHtml() + `
+    <div class="card" id="s-ai-card" hidden>
+      <h2 id="s-ai-title">AI 详评 <span class="sub">流式输出</span></h2>
+      <div class="btn-row" style="margin-top:0"><button class="btn ghost small" id="s-stop" style="display:none">停止</button></div>
+      <div class="gen-stream" id="s-stream" hidden></div>
+      <div id="s-ai-body"></div>
+      <div class="err-box" id="s-err" hidden></div>
+    </div>`;
+  $("#s-copy").addEventListener("click", () => copyText(scoreReportText()));
+  $("#s-ai").addEventListener("click", () => startScoreReview());
+  if (scoreState.review) renderReviewResult();
+}
+
+function scoreReportText() {
+  const { ctx, wg, prog, review, full } = scoreState;
+  const rows = ["【名字】" + ctx.name + (review && review.pinyin ? "（" + review.pinyin + "）" : "")];
+  if (wg) {
+    const g = wg.grids;
+    rows.push("【康熙笔画】" + wg.chars.map((c) => c.ch + c.s + "画" + (c.verified ? "" : "?")).join("　"));
+    if (ctx.mode === "baby") {
+      rows.push("【五格】天" + g.tian.num + " 人" + g.ren.num + "(" + g.ren.luck + ") 地" + g.di.num +
+        "(" + g.di.luck + ") 外" + g.wai.num + "(" + g.wai.luck + ") 总" + g.zong.num + "(" + g.zong.luck + ")");
+      rows.push("【三才】" + wg.sancai.elements + " → " + wg.sancai.verdict + "（" + wg.sancai.note + "）");
+    } else {
+      rows.push("【总格】" + g.zong.num + "（" + g.zong.luck + "）");
+    }
+    if (wg.unverified.length) rows.push("（笔画未经核验：" + wg.unverified.join("、") + "）");
+  }
+  rows.push("【程序分】" + (prog === null ? "无法计算（缺笔画）" : prog + "／100"));
+  if (review) {
+    if (typeof review.score_sound === "number") rows.push("【AI 音律】" + review.score_sound);
+    if (typeof review.score_meaning === "number") rows.push("【AI 字义】" + review.score_meaning);
+    if (review.comment) rows.push("【AI 总评】\n" + review.comment);
+  }
+  if (full) rows.push("【综合评分】" + full.total + "／100（" + full.formula + "）");
+  rows.push("（起名建议由 AI 生成，仅供文化参考；笔画以《康熙字典》为准）");
+  return rows.join("\n");
+}
+
+let scoreCtl = null;
+
+async function startScoreReview() {
+  if (scoreState.running) { toast("详评进行中…"); return; }
+  const cfg = (await loadConfig()) || { providers: {}, provider: "glm" };
+  const pid = cfg.provider || "glm";
+  const ctx = scoreState.ctx;
+  const system = QiMingPrompts.SYSTEM_SCORE;
+  const user = QiMingPrompts.scoreUser(Object.assign({}, ctx, { wugeText: wugeSummaryText(scoreState.wg) }));
+
+  scoreState.running = true;
+  const card = $("#s-ai-card");
+  card.hidden = false;
+  $("#s-ai-body").innerHTML = "";
+  const streamBox = $("#s-stream");
+  streamBox.hidden = MODE !== "client" || !!nativeStreamHttp();
+  const stopBtn = $("#s-stop");
+  stopBtn.style.display = (MODE !== "client" || nativeStreamHttp()) ? "" : "none";
+
+  let buf = "", lastPaint = 0;
+  const paint = () => { streamBox.textContent = buf; streamBox.scrollTop = streamBox.scrollHeight; };
+  stopBtn.addEventListener("click", () => {
+    if (scoreCtl) scoreCtl.abort();
+    if (nativeStreamCancel) nativeStreamCancel();
+  });
+
+  const finish = () => {
+    scoreState.running = false;
+    scoreCtl = null;
+    const title = $("#s-ai-title");
+    if (title) title.innerHTML = "AI 详评 <span class='sub'>完成</span>";
+    stopBtn.style.display = "none";
+  };
+
+  scoreCtl = new AbortController();
+  try {
+    const text = await llmStream(pid, system, user, (st) => {
+      buf = st.content;
+      const now = performance.now();
+      if (now - lastPaint > 120) { lastPaint = now; paint(); }
+    }, scoreCtl);
+    const parsed = QiMingParse.review(text);
+    if (!parsed.ok) {
+      finish();
+      $("#s-ai-body").innerHTML = `<div class="err-box">AI 未按约定返回 JSON（${esc(parsed.reason)}），原文如下：</div>
+        <div class="fallback-box">${md(text)}</div>`;
+      return;
+    }
+    scoreState.review = parsed.item;
+    // 程序分缺笔画时，用 AI 自报笔画补算（标注未核验）
+    if (!scoreState.wg && parsed.item.kangxi && parsed.item.kangxi.length === ctx.name.length) {
+      const ai = {};
+      ctx.name.split("").forEach((c, i) => { if (parsed.item.kangxi[i]) ai[c] = parsed.item.kangxi[i]; });
+      const redone = programScore(ctx, ai);
+      scoreState.wg = redone.wg;
+      scoreState.prog = redone.score;
+    }
+    // 合成综合分（与生成卡片同权重）
+    const item = Object.assign({}, parsed.item, {
+      name: ctx.name,
+      given: ctx.name.slice(ctx.surLen)
+    });
+    scoreState.full = enrichItem(item, ctx);
+    finish();
+    renderScoreResult();  // 程序卡与详评卡一起重绘
+    toast("综合评分：" + scoreState.full.total);
+  } catch (e) {
+    finish();
+    if (e.name === "AbortError") { toast("已停止"); return; }
+    const errBox = $("#s-err");
+    if (errBox) { errBox.hidden = false; errBox.textContent = "详评失败：" + hintFor(e.message, pid); }
+  }
+}
+
+function renderReviewResult() {
+  const { review, full, ctx } = scoreState;
+  const body = $("#s-ai-body");
+  if (!body || !review) return;
+  const parts = (full && full.parts || []).map((p) =>
+    `<span class="tag meta">${esc(p.name)} ${p.score}</span>`).join("");
+  body.innerHTML = `
+    <div class="nc-head" style="margin-top:10px">
+      <div class="nc-chips" style="margin-top:0">${parts}</div>
+      ${full ? ringHtml(full.total) : ""}
+    </div>
+    ${review.pinyin ? `<div class="hint" style="margin-top:6px">拼音：${esc(review.pinyin)}</div>` : ""}
+    ${full && full.formula ? `<div class="score-formula">综合分权重：${esc(full.formula)}</div>` : ""}
+    ${review.comment ? `<div class="fallback-box" style="margin-top:10px">${md(review.comment)}</div>` : ""}
+    <div class="score-formula">音律/字义为 AI 自评，五格/数理为程序计算；结果仅供参考。</div>`;
+  $("#s-ai-card").hidden = false;
+}
+
 // ---------------- 生成流程 ----------------
 function babyCtx() {
   const surname = babyForm.surname.trim();
@@ -704,6 +998,39 @@ function renderGenPanel(streamText) {
 
 let genCtl = null;
 
+/* 通用 LLM 流式请求：服务端走 /api/generate 转发，离线走原生插件/浏览器直连。
+ * onDelta({content, reason}) 由调用方自行节流；返回完整文本；
+ * 中止时抛 name === "AbortError" 的异常。生成与评分两页共用。 */
+async function llmStream(pid, system, user, onDelta, ctl) {
+  if (MODE === "client") {
+    const plugin = nativeStreamHttp();
+    if (plugin) return clientGenerateStream(pid, system, user, onDelta);
+    const text = await clientGenerate(pid, system, user);
+    if (onDelta) onDelta({ content: text, reason: "" });
+    return text;
+  }
+  const res = await fetch("/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: pid, system, user }),
+    signal: ctl ? ctl.signal : undefined,
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    throw new Error(j.error || "HTTP " + res.status);
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    if (onDelta) onDelta({ content: buf, reason: "" });
+  }
+  return buf;
+}
+
 async function startGenerate(mode) {
   if (gen.running) { toast("正在生成中…"); return; }
   let ctx;
@@ -720,7 +1047,8 @@ async function startGenerate(mode) {
 
   gen = { mode, items: [], exclude: gen.mode === mode ? gen.exclude : [], ctx, running: true };
   $("#results").innerHTML = "";
-  renderGenPanel("");
+  renderGenPanel(MODE === "client" && !nativeStreamHttp()
+    ? "离线直连（浏览器模式）：非流式生成，完整体显示…" : "");
 
   const streamEl = () => $("#gen-stream");
   let buf = "", lastPaint = 0;
@@ -762,56 +1090,15 @@ async function startGenerate(mode) {
     toast(`解析成功：${items.length} 个候选` + (parsed.dropped ? `（丢弃 ${parsed.dropped} 项）` : ""));
   };
 
-  if (MODE === "client") {
-    const stream = nativeStreamHttp();
-    renderGenPanel(stream ? "" : "离线直连（浏览器模式）：非流式生成，完整体显示…");
-    try {
-      let text;
-      if (stream) {
-        text = await clientGenerateStream(pid, system, user, (st) => {
-          buf = st.content;
-          const now = performance.now();
-          if (now - lastPaint > 120) { lastPaint = now; paint(); }
-        });
-      } else {
-        text = await clientGenerate(pid, system, user);
-        buf = text; paint();
-      }
-      handle(text);
-    } catch (e) {
-      finishRun();
-      const errBox = $("#gen-err");
-      if (errBox) {
-        errBox.hidden = false;
-        errBox.textContent = "生成失败：" + hintFor(e.message, pid);
-      }
-      if (!buf) toast("生成失败");
-    }
-    return;
-  }
-
   genCtl = new AbortController();
   try {
-    const res = await fetch("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: pid, system, user }),
-      signal: genCtl.signal,
-    });
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      throw new Error(j.error || "HTTP " + res.status);
-    }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
+    const text = await llmStream(pid, system, user, (st) => {
+      buf = st.content;
       const now = performance.now();
       if (now - lastPaint > 120) { lastPaint = now; paint(); }
-    }
-    handle(buf);
+    }, genCtl);
+    buf = text;
+    handle(text);
   } catch (e) {
     finishRun();
     if (e.name === "AbortError") {
@@ -853,8 +1140,7 @@ function ringHtml(score) {
   </div>`;
 }
 
-function wugeDetailHtml(it) {
-  const wg = it.wuge;
+function wugeDetailHtml(wg) {
   if (!wg) {
     return `<div class="unverified">名字含未收录且未自报笔画的字，五格无法计算。</div>`;
   }
@@ -904,7 +1190,7 @@ function cardHtml(it, idx) {
     <div class="nc-char-wx">${wx}</div>
     <details class="nc-detail">
       <summary>三才五格明细（程序复核，康熙笔画）</summary>
-      ${wugeDetailHtml(it)}
+      ${wugeDetailHtml(it.wuge)}
     </details>
     <div class="nc-btns">
       <button class="btn small ghost" data-act="copy" data-idx="${idx}">复制解读</button>
@@ -1260,6 +1546,7 @@ if (typeof window !== "undefined") {
     clientApi, clientGenerate,
     get gen() { return gen; },
     parse: (t) => QiMingParse.candidates(t),
+    review: (t) => QiMingParse.review(t),
     // 纯函数直测（无 DOM 环境下验证卡片/明细/复制文本的生成）
     test: {
       cardHtml: (it, i) => cardHtml(it, i),
@@ -1267,8 +1554,13 @@ if (typeof window !== "undefined") {
       enrichItem: (it, ctx) => enrichItem(it, ctx),
       get babyForm() { return babyForm; }, set babyForm(v) { babyForm = v; },
       get coForm() { return coForm; }, set coForm(v) { coForm = v; },
+      get scoreForm() { return scoreForm; }, set scoreForm(v) { scoreForm = v; },
       babyCtx: () => babyCtx(),
-      companyCtx: () => companyCtx()
+      companyCtx: () => companyCtx(),
+      scoreCtx: () => scoreCtx(),
+      programScore: (ctx, ai) => programScore(ctx, ai),
+      wugeSummaryText: (wg) => wugeSummaryText(wg),
+      scoreReportText: () => scoreReportText()
     }
   };
 }

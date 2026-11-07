@@ -73,4 +73,37 @@ r = P.candidates(JSON.stringify([ITEM({ name: "李".repeat(20) })]));
 assert.ok(!r.ok || r.items.length === 0, "超长 name 应被丢弃");
 console.log("✓ 超长字段防护 OK");
 
+// ---------- 评分详评 review()：单对象解析 ----------
+const RV = (over) => Object.assign({
+  pinyin: "lǐ mù yáng", wuxing: ["木", "水", "火"], kangxi: [7, 8, 17],
+  score_sound: 88, score_meaning: 92, comment: "## 音律\n声调有致。\n## 字义\n沐泽朝阳。"
+}, over || {});
+
+r = P.review("```json\n" + JSON.stringify(RV()) + "\n```\n希望有帮助！");
+assert.ok(r.ok, "围栏对象应解析成功");
+assert.strictEqual(r.item.pinyin, "lǐ mù yáng");
+assert.deepStrictEqual(r.item.wuxing, ["木", "水", "火"]);
+assert.deepStrictEqual(r.item.kangxi, [7, 8, 17]);
+assert.strictEqual(r.item.score_sound, 88);
+assert.ok(r.item.comment.includes("音律"));
+console.log("✓ 评分详评对象解析（围栏）OK");
+
+// 脏数据：分数越界 / kangxi 字符串 / wuxing 带杂质 / comment 超长
+r = P.review(JSON.stringify(RV({
+  score_sound: 200, score_meaning: "85", kangxi: "7,8,17", wuxing: ["木", "x", 3]
+})));
+assert.ok(r.ok);
+assert.strictEqual(r.item.score_sound, 100, "200 钳到 100");
+assert.strictEqual(r.item.score_meaning, 85, "数字字符串转数值");
+assert.deepStrictEqual(r.item.kangxi, [7, 8, 17]);
+assert.deepStrictEqual(r.item.wuxing, ["木", null, null], "非法五行置 null");
+console.log("✓ 评分详评脏数据消毒 OK");
+
+// 失败分支：无数组对象 / 纯闲话 / 空串 / 顶层数组
+assert.ok(!P.review("这个问题无法评估。").ok);
+assert.ok(!P.review("").ok);
+assert.ok(!P.review(null).ok);
+assert.ok(!P.review("[1,2,3]").ok, "顶层数组不是详评对象");
+console.log("✓ 评分详评失败分支 OK");
+
 console.log("\nAI JSON 解析健壮性测试全部通过");

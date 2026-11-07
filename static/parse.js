@@ -140,5 +140,34 @@
     return { ok: true, items: items, dropped: dropped };
   }
 
-  global.QiMingParse = { candidates: candidates };
+  /* review(text) → { ok, item } 或 { ok:false, reason }
+   * 评分详评输出为单个 JSON 对象（pinyin/wuxing/kangxi/score_sound/score_meaning/comment）。 */
+  function review(text) {
+    if (typeof text !== "string" || !text.trim()) {
+      return { ok: false, reason: "空输出" };
+    }
+    var t = stripFences(text);
+    var a = t.indexOf("{"), b = t.lastIndexOf("}");
+    if (a < 0 || b <= a) {
+      return { ok: false, reason: "未找到 JSON 对象" };
+    }
+    var data = tryParse(t.slice(a, b + 1));
+    if (data === undefined) {
+      data = tryParse(repair(t.slice(a, b + 1)));
+    }
+    if (data === undefined || typeof data !== "object" || Array.isArray(data)) {
+      return { ok: false, reason: "JSON 解析失败" };
+    }
+    var item = {
+      pinyin: String(data.pinyin == null ? "" : data.pinyin).trim().slice(0, 80),
+      wuxing: normalizeWuxing(data.wuxing),
+      kangxi: normalizeKangxi(data.kangxi),
+      score_sound: clampScore(data.score_sound),
+      score_meaning: clampScore(data.score_meaning),
+      comment: String(data.comment == null ? "" : data.comment).trim().slice(0, 2000)
+    };
+    return { ok: true, item: item };
+  }
+
+  global.QiMingParse = { candidates: candidates, review: review };
 })(typeof window !== "undefined" ? window : globalThis);
